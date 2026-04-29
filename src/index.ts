@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import dotenv from 'dotenv';
@@ -17,12 +17,23 @@ const modelName = process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro';
 const model = apiKey ? deepseek.chat(modelName) : createMockModel();
 
 async function main() {
-  const { text } = await generateText({
+  // const { text } = await generateText({
+  //   model,
+  //   prompt: '用一句话介绍你自己',
+  // })
+
+  // console.log(text);
+
+  // ==============================
+  const result = streamText({
     model,
     prompt: '用一句话介绍你自己',
-  })
+  });
 
-  console.log(text);
+  for await (const chunk of result.textStream) {
+    process.stdout.write(chunk);
+  }
+  console.log(); // 换行
 }
 
 main();

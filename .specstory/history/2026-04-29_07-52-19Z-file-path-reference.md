@@ -396,4 +396,108 @@ reader.read() 读的时候，是读一块吗，还是读一个字这样的
 _**Agent (composer-2)**_
 
 <think><details><summary>Thought Process</summary>
-When using a reader with ReadableStream,</details></think>
+When using a reader with ReadableStream, the stream's behavior depends on how the reader is utilized, including methods like read(), cancel(), and releaseLock(). Proper handling ensures efficient data consumption without blocking or losing data. - read() retrieves chunks sequentially - cancel() aborts the stream - releaseLock() allows another reader to take control When `read()` is called, it retrieves one chunk from the stream queue. The content of each chunk depends on how the stream producer enqueues data. In the mock-model.ts example, each `enqueue` call adds one chunk to the queue, and these chunks may contain single characters when text is split into individual characters. Therefore, each `read()` call returns one chunk, which can contain one character depending on how the stream was constructed. Each `read()` call typically returns the next enqueued chunk, where each chunk corresponds to a single `enqueue()` call. In most cases, this is a 1:1 relationship between reads and chunks, though some implementations may merge or split chunks. In the example code, because each `enqueue()` call processes one character, each `read()` returns one chunk containing one character in the `delta` field. This is not based on UTF-8 byte-level splitting but rather on how the stream producer enqueues data.</details></think>
+
+_**Agent (composer-2)**_
+
+取决于 **谁在往里 `enqueue` 什么**，不是 `read()` 自己固定「读一个字」或「读一块」。
+
+## `read()` 一般读到的是什么？
+
+每次 **`reader.read()`** 返回的是：**队列里下一份可用的数据**。  
+在你们的 mock 里，这份数据通常对应 **`controller.enqueue(...)` 调用了一次** 放进来的那一个元素。
+
+也就是说：**一次 `enqueue` ≈ 消费者侧常常对应「读到的一份」**（有背压时可能略有缓冲，但概念上就是这样）。
+
+## 结合你们的 `mock-model.ts`
+
+- `chunks` 里，正文被做成：  
+  `...text.split('').map((char) => ({ type: 'text-delta', id, delta: char }))`  
+  也就是 **每个字一个 `text-delta` 对象**。
+- `createDelayedStream` 里 **每 30ms 只 `enqueue(chunks[i])` 一次**。
+
+所以对读这个流的人来说：**很多情况下就是「读到一个 chunk」**，而这个 chunk 在 `text-delta` 时 **`delta` 里就是一个字符**——所以效果上像 **「一次读一个字」**，是因为 **你们故意按字切了并每次只 enqueue 一条**，不是 `read()` API 规定「必须按字读」。
+
+## 若改成整段 enqueue
+
+如果上游 **一次 `enqueue` 一大段字符串**（或很多字在一个对象里），那 **一次 `read()` 读到的就是「那一大段」对应的那次 enqueue**，就不会是「一个字一次」了。
+
+**一句话**：`read()` 读的是 **下一条入队的 enqueue 单位**；你们现在是 **按字拆成很多条 enqueue**，所以读出来才像 **一个字一条**。
+
+---
+
+_**User**_
+
+@src/index.ts:33-35 这里还可以是 result.fullStream，对比下这两个，给我讲解下
+
+---
+
+_**Agent (composer-2)**_
+
+<think><details><summary>Thought Process</summary>
+The user wants to compare `result`.</details></think>
+
+_**Agent (composer-2)**_
+
+<tool-use data-tool-type="read" data-tool-name="read_file_v2">
+<details><summary>Tool use: **read_file_v2** • Read file: /Users/mahonglve/Desktop/gongdao/ai-project/super-agent/src/index.ts</summary>
+
+</details>
+</tool-use>
+
+<tool-use data-tool-type="read" data-tool-name="read_file_v2"><details>
+<summary>Tool use: **read_file_v2**</summary>
+
+</details></tool-use>
+
+_**Agent (composer-2)**_
+
+<think><details><summary>Thought Process</summary>
+textStream provides a streaming interface for text generation, allowing real-time processing of responses as they are generated. fullStream offers a more comprehensive streaming experience that includes additional metadata and control structures beyond just the text content.</details></think>
+
+_**Agent (composer-2)**_
+
+你这里用的是 `streamText` 的返回值。在 **Vercel AI SDK** 里，**`textStream` 和 `fullStream` 都是「流」**，但**里装的东西不一样**。
+
+## `result.textStream`
+
+- **内容**：只有**纯文本片段**（`string`）。
+- **用途**：**像打字机一样把回答打到终端/页面上**，不用管协议细节。
+- **你的写法**：`process.stdout.write(chunk)` 正好是每个 chunk 是一段 UTF-16 字符串。
+
+适合：**只关心最终可读文本**（聊天 UI、日志）。
+
+---
+
+## `result.fullStream`
+
+- **内容**：**结构化的事件块**，带 `type` 字段，例如：
+  - `text-start` / `text-delta` / `text-end`（文本流分段）
+  - `reasoning-*`（若模型支持推理内容）
+  - `tool-call-*`、`tool-result`（工具调用）
+  - `finish`、`error` 等
+- **用途**：你要做 **完整协议处理**：区分推理 vs 正文、处理工具调用、统计 token、对接自家 UI 组件等。
+- **消费方式**：要 **`switch (part.type)`**（或类似分支）分别处理，不能像 `textStream` 那样无脑 `write`。
+
+适合：**Agent、工具调用、需要精细控制流式 UI 或埋点**。
+
+---
+
+## 对照小结
+
+| | `textStream` | `fullStream` |
+|---|----------------|----------------|
+| **每个 chunk 类型** | `string` | 带 `type` 的对象（多种事件） |
+| **心智负担** | 低，等同「只要答案文本」 | 高，要按事件类型处理 |
+| **工具调用 / 推理块** | 不会出现结构化事件，通常只有合并后的文本侧体验 | 能看到完整管线事件 |
+
+---
+
+## 和之前 `mock-model` 的关系
+
+你在 `mock-model` 里 `doStream` 返回的正是 **Language Model 层的「全量协议 chunk」**；SDK 再往上包一层后：
+
+- **`textStream`** ≈ 帮你从这些事件里**只抽出文本 delta**，拼成给人类读的字符流。
+- **`fullStream`** ≈ **接近模型/SDK 内部的原始事件流**（语义化后的 `StreamPart`）。
+
+所以：**只要往终端刷一句回答，用 `textStream` 最合适；要做工具、推理条、自定义渲染，再用 `fullStream`。**
