@@ -1,16 +1,15 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { createInterface } from 'node:readline';
 import { weatherTool, calculatorTool } from './tool';
-import { agentLoop } from './agent-loop';
+
+dotenv.config();
 
 const tools = { get_weather: weatherTool, calculator: calculatorTool };
 
 const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.DASHSCOPE_API_KEY;
-
-const SYSTEM_PROMPT = `你是 Walry Agent，一个有工具调用能力的 AI 助手。需要时主动使用工具获取信息，不要编造数据。`;
 
 const deepseek = createOpenAI({
   apiKey,
@@ -56,8 +55,37 @@ function ask() {
 
     messages.push({ role: 'user', content: trimmed });
 
-    await agentLoop(model, tools, messages, SYSTEM_PROMPT);
+    let fullResponse = '';
+    const result = streamText({
+      model,
+      system: `你是 Walry Agent，一个有工具调用能力的 AI 助手。需要时主动使用工具获取信息，不要编造数据。
+      `,
+      tools,
+      messages,
+      stopWhen: stepCountIs(5),
+    });
 
+    process.stdout.write('Assistant: ');
+    for await (const part of result.fullStream) { 
+      // console.log('>>>>>part', part);
+      switch (part.type) {
+        case 'text-delta':
+          process.stdout.write(part.text);
+          fullResponse += part.text;
+          break;
+        case 'tool-call':
+          console.log(`\n [调用工具： ${part.toolName} ${JSON.stringify(part.input)}`)
+          break;
+        case 'tool-result':
+          console.log(` [工具返回： ${JSON.stringify(part.output)}]`);
+          break;
+      }
+    }
+    console.log(); // 换行
+    // // 必须回写完整的模型消息，不能只保存文本，否则会丢失推理内容和工具消息。
+    // const response = await result.response;
+    // messages.push(...response.messages);
+    messages.push({ role: 'assistant', content: fullResponse });
     ask();
   })
 }
@@ -82,5 +110,5 @@ async function main() {
 }
 // main();
 
-console.log('Super Agent v0.2 (type "exit" to quit)\n');
+console.log('Super Agent v0.1 (type "exit" to quit)\n');
 ask();
