@@ -1,4 +1,4 @@
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import { streamText, type ModelMessage } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createMockModel } from "./mock-model";
 import dotenv from 'dotenv';
@@ -19,8 +19,8 @@ const deepseek = createOpenAI({
     if (typeof input === 'string' && input.endsWith('/chat/completions') && typeof init?.body === 'string') {
       const body = JSON.parse(init.body);
 
-      // DeepSeek thinking + tools 需要后续请求回传 reasoning_content。
-      // 当前 @ai-sdk/openai chat 适配层不会序列化该字段，因此显式关闭 thinking。
+      // DeepSeek thinking 模式要求续传 reasoning_content，
+      // 当前 @ai-sdk/openai chat 适配层不会回传该字段，因此显式关闭。
       body.thinking = { type: 'disabled' };
       delete body.reasoning_effort;
 
@@ -57,29 +57,19 @@ function ask() {
 
     const result = streamText({
       model,
-      system: `你是 Walry Agent，一个有工具调用能力的 AI 助手。需要时主动使用工具获取信息，不要编造数据。
+      system: `你是 Walry Agent，一个专注于解决用户困扰的逻辑学专家。
+      你说话简洁直接，用户的问题可能很复杂，请用简单的例子和类比来解释，帮助他们理解。
+      如果用户的问题不够清晰，你会反问而不是瞎猜，使用中文回答。
       `,
-      tools,
       messages,
-      stopWhen: stepCountIs(5),
     });
 
     process.stdout.write('Assistant: ');
-    for await (const part of result.fullStream) { 
-      switch (part.type) {
-        case 'text-delta':
-          process.stdout.write(part.text);
-          break;
-        case 'tool-call':
-          console.log(`\n [调用工具： ${part.toolName} ${JSON.stringify(part.input)}`)
-          break;
-        case 'tool-result':
-          console.log(` [工具返回： ${JSON.stringify(part.output)}]`);
-          break;
-      }
+    for await (const chunk of result.textStream) { 
+      process.stdout.write(chunk);
     }
     console.log(); // 换行
-    // 必须回写完整的模型消息，不能只保存文本，否则会丢失推理内容和工具消息。
+    // 必须回写完整的模型消息，不能只保存文本，否则会丢失推理内容。
     const response = await result.response;
     messages.push(...response.messages);
     ask();
